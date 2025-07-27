@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#f8f9fa">
+
+<LinearLayout
+    android:id="@+id/mainContent"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="16dp"
+    android:gravity="center_horizontal"
+    android:layout_above="@+id/bottomToolbarContainer">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Qingpu Dialect ASR"
+        android:textSize="24sp"
+        android:textStyle="bold"
+        android:textColor="#333333"
+        android:layout_marginBottom="32dp" />
+
+    <TextView
+        android:id="@+id/statusText"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Ready to record"
+        android:textSize="16sp"
+        android:textColor="#666666"
+        android:layout_marginBottom="16dp" />
+
+    <TextView
+        android:id="@+id/timerText"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="00:00"
+        android:textSize="32sp"
+        android:textStyle="bold"
+        android:textColor="#e74c3c"
+        android:layout_marginBottom="32dp" />
+
+    <LinearLayout
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:layout_marginBottom="32dp">
+
+        <Button
+            android:id="@+id/recordButton"
+            android:layout_width="100dp"
+            android:layout_height="60dp"
+            android:text="Record"
+            android:textColor="@android:color/white"
+            android:background="@drawable/button_record"
+            android:layout_marginEnd="8dp"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/pauseButton"
+            android:layout_width="100dp"
+            android:layout_height="60dp"
+            android:text="Pause"
+            android:textColor="@android:color/white"
+            android:background="@drawable/button_pause"
+            android:enabled="false"
+            android:layout_marginEnd="8dp"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/stopButton"
+            android:layout_width="100dp"
+            android:layout_height="60dp"
+            android:text="Stop"
+            android:textColor="@android:color/white"
+            android:background="@drawable/button_stop"
+            android:enabled="false"
+            android:textStyle="bold" />
+
+    </LinearLayout>
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Recordings"
+        android:textSize="18sp"
+        android:textStyle="bold"
+        android:textColor="#333333"
+        android:layout_marginBottom="16dp" />
+
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/recordingsRecyclerView"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:background="@android:color/white"
+        android:padding="8dp" />
+
+</LinearLayout>
+
+<FrameLayout
+    android:id="@+id/bottomToolbarContainer"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_alignParentBottom="true">
+    
+    <include layout="@layout/bottom_toolbar" />
+    
+</FrameLayout>
+
+</RelativeLayout> 

@@ -1,0 +1,44 @@
+*.iml
+.gradle
+/local.properties
+/.idea
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+app/build/
+app/release/
+app/debug/
+*.apk
+*.aab
+*.hprof
+.navigation/
+captures/
+output.json
+output-metadata.json
+
+# Android Studio
+*.iws
+*.ipr
+.idea/
+.gradle/
+build/
+.navigation/
+captures/
+output.json
+
+# VS Code
+.vscode/
+.settings/
+
+# Keystore files
+*.jks
+*.keystore
+
+# Google Services (e.g. APIs or Firebase)
+google-services.json
+
+# Android Profiling
+*.hprof

@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/bottomToolbar"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="horizontal"
+    android:background="#2c3e50"
+    android:padding="16dp"
+    android:gravity="center"
+    android:visibility="gone"
+    android:elevation="8dp">
+
+    <Button
+        android:id="@+id/deleteButton"
+        android:layout_width="0dp"
+        android:layout_height="48dp"
+        android:layout_weight="1"
+        android:text="Delete"
+        android:textColor="@android:color/white"
+        android:background="@drawable/button_delete"
+        android:layout_marginEnd="8dp"
+        android:textStyle="bold" />
+
+    <Button
+        android:id="@+id/renameButton"
+        android:layout_width="0dp"
+        android:layout_height="48dp"
+        android:layout_weight="1"
+        android:text="Rename"
+        android:textColor="@android:color/white"
+        android:background="@drawable/button_rename"
+        android:layout_marginEnd="8dp"
+        android:textStyle="bold" />
+
+    <Button
+        android:id="@+id/transcribeButton"
+        android:layout_width="0dp"
+        android:layout_height="48dp"
+        android:layout_weight="1"
+        android:text="Transcribe"
+        android:textColor="@android:color/white"
+        android:background="@drawable/button_transcribe"
+        android:textStyle="bold" />
+
+</LinearLayout> 
