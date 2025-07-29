@@ -6,7 +6,9 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
+import android.media.AudioFormat
 import android.media.AudioManager
+import android.media.AudioRecord
 import android.media.MediaPlayer
 import android.media.MediaRecorder
 import android.util.Log
@@ -25,7 +27,9 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import kotlinx.coroutines.*
 import java.io.File
+import java.io.FileOutputStream
 import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.*
@@ -33,6 +37,9 @@ import java.util.*
 class MainActivity : AppCompatActivity() {
     companion object {
         private const val TAG = "QingpuASR"
+        private const val SAMPLE_RATE = 16000 // Whisper's preferred sample rate
+        private const val CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO
+        private const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
     }
     
     private lateinit var recordButton: Button
@@ -46,7 +53,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var renameButton: Button
     private lateinit var transcribeButton: Button
     
-    private var mediaRecorder: MediaRecorder? = null
+    private var audioRecord: AudioRecord? = null
     private var mediaPlayer: MediaPlayer? = null
     private var audioManager: AudioManager? = null
     private var audioFocusRequest: AudioFocusRequest? = null
@@ -55,6 +62,7 @@ class MainActivity : AppCompatActivity() {
     private var recordingStartTime = 0L
     private var pausedTime = 0L
     private var currentRecordingFile: String? = null
+    private var recordingJob: Job? = null
     
     private val handler = Handler(Looper.getMainLooper())
     private var timerRunnable: Runnable? = null
@@ -185,46 +193,161 @@ class MainActivity : AppCompatActivity() {
     
     private fun startRecording() {
         try {
-            // Try WAV format first for better API compatibility
+            // Create WAV file directly
             val fileName = generateWavFileName()
             val file = File(getExternalFilesDir(null), fileName)
             currentRecordingFile = file.absolutePath
             
-            Log.d(TAG, "Starting recording to file: $fileName")
+            Log.d(TAG, "Starting PCM recording to file: $fileName")
             Log.d(TAG, "File path: ${file.absolutePath}")
-            Log.d(TAG, "Storage directory: ${getExternalFilesDir(null)?.absolutePath}")
+            Log.d(TAG, "Sample rate: $SAMPLE_RATE Hz")
             
-            mediaRecorder = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-                MediaRecorder(this)
-            } else {
-                @Suppress("DEPRECATION")
-                MediaRecorder()
-            }.apply {
-                setAudioSource(MediaRecorder.AudioSource.MIC)
-                setOutputFormat(MediaRecorder.OutputFormat.DEFAULT)
-                setOutputFile(file.absolutePath)
-                setAudioEncoder(MediaRecorder.AudioEncoder.DEFAULT)
-                
-                prepare()
-                start()
+            // Calculate buffer size
+            val bufferSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT)
+            Log.d(TAG, "AudioRecord buffer size: $bufferSize bytes")
+            
+            // Create AudioRecord instance
+            audioRecord = AudioRecord(
+                MediaRecorder.AudioSource.MIC,
+                SAMPLE_RATE,
+                CHANNEL_CONFIG,
+                AUDIO_FORMAT,
+                bufferSize
+            )
+            
+            if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
+                throw IllegalStateException("AudioRecord not initialized properly")
             }
             
+            // Start recording
+            audioRecord?.startRecording()
             isRecording = true
             recordingStartTime = System.currentTimeMillis()
             
+            // Start background recording job
+            recordingJob = CoroutineScope(Dispatchers.IO).launch {
+                recordAudioToWav(file, bufferSize)
+            }
+            
             updateUI()
             startTimer()
-            
             statusText.text = "Recording..."
             
-        } catch (e: IOException) {
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start recording: ${e.message}", e)
             Toast.makeText(this, "Failed to start recording: ${e.message}", Toast.LENGTH_SHORT).show()
         }
     }
     
+    private suspend fun recordAudioToWav(outputFile: File, bufferSize: Int) {
+        try {
+            val audioBuffer = ShortArray(bufferSize / 2) // 16-bit samples
+            val audioDataList = mutableListOf<Short>()
+            
+            Log.d(TAG, "Starting audio capture loop...")
+            
+            while (isRecording && !isPaused) {
+                val readCount = audioRecord?.read(audioBuffer, 0, audioBuffer.size) ?: 0
+                if (readCount > 0) {
+                    // Add audio data to our list
+                    for (i in 0 until readCount) {
+                        audioDataList.add(audioBuffer[i])
+                    }
+                }
+                
+                // Check if we should continue
+                if (readCount == AudioRecord.ERROR_INVALID_OPERATION) {
+                    Log.e(TAG, "AudioRecord read error: INVALID_OPERATION")
+                    break
+                }
+            }
+            
+            Log.d(TAG, "Audio capture finished. Total samples: ${audioDataList.size}")
+            
+            // Convert to byte array and write WAV file
+            val audioBytes = audioDataList.flatMap { sample ->
+                listOf(
+                    (sample.toInt() and 0xFF).toByte(),
+                    ((sample.toInt() shr 8) and 0xFF).toByte()
+                )
+            }.toByteArray()
+            
+            writeWavFile(outputFile, audioBytes)
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error during audio recording: ${e.message}", e)
+            withContext(Dispatchers.Main) {
+                Toast.makeText(this@MainActivity, "Recording error: ${e.message}", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+    
+    private fun writeWavFile(outputFile: File, audioData: ByteArray) {
+        try {
+            FileOutputStream(outputFile).use { output ->
+                // WAV file parameters
+                val channels = 1
+                val bitsPerSample = 16
+                val byteRate = SAMPLE_RATE * channels * bitsPerSample / 8
+                val blockAlign = channels * bitsPerSample / 8
+                val audioDataSize = audioData.size
+                
+                Log.d(TAG, "Writing WAV file:")
+                Log.d(TAG, "  Audio data size: $audioDataSize bytes")
+                Log.d(TAG, "  Sample rate: $SAMPLE_RATE Hz")
+                Log.d(TAG, "  Channels: $channels")
+                Log.d(TAG, "  Bits per sample: $bitsPerSample")
+                
+                // Write WAV header (44 bytes)
+                val header = ByteArray(44)
+                var pos = 0
+                
+                // RIFF header
+                "RIFF".toByteArray().copyInto(header, pos); pos += 4
+                writeInt32LE(header, pos, 36 + audioDataSize); pos += 4
+                "WAVE".toByteArray().copyInto(header, pos); pos += 4
+                
+                // fmt chunk
+                "fmt ".toByteArray().copyInto(header, pos); pos += 4
+                writeInt32LE(header, pos, 16); pos += 4 // fmt chunk size
+                writeInt16LE(header, pos, 1); pos += 2 // PCM format
+                writeInt16LE(header, pos, channels); pos += 2
+                writeInt32LE(header, pos, SAMPLE_RATE); pos += 4
+                writeInt32LE(header, pos, byteRate); pos += 4
+                writeInt16LE(header, pos, blockAlign); pos += 2
+                writeInt16LE(header, pos, bitsPerSample); pos += 2
+                
+                // data chunk
+                "data".toByteArray().copyInto(header, pos); pos += 4
+                writeInt32LE(header, pos, audioDataSize); pos += 4
+                
+                // Write header and audio data
+                output.write(header)
+                output.write(audioData)
+                
+                Log.d(TAG, "WAV file written successfully: ${outputFile.absolutePath}")
+                Log.d(TAG, "Total file size: ${outputFile.length()} bytes")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error writing WAV file: ${e.message}", e)
+            throw e
+        }
+    }
+    
+    private fun writeInt32LE(buffer: ByteArray, offset: Int, value: Int) {
+        buffer[offset] = (value and 0xFF).toByte()
+        buffer[offset + 1] = ((value shr 8) and 0xFF).toByte()
+        buffer[offset + 2] = ((value shr 16) and 0xFF).toByte()
+        buffer[offset + 3] = ((value shr 24) and 0xFF).toByte()
+    }
+    
+    private fun writeInt16LE(buffer: ByteArray, offset: Int, value: Int) {
+        buffer[offset] = (value and 0xFF).toByte()
+        buffer[offset + 1] = ((value shr 8) and 0xFF).toByte()
+    }
+    
     private fun pauseRecording() {
         try {
-            mediaRecorder?.pause()
             isPaused = true
             pausedTime = System.currentTimeMillis()
             stopTimer()
@@ -237,7 +360,6 @@ class MainActivity : AppCompatActivity() {
     
     private fun resumeRecording() {
         try {
-            mediaRecorder?.resume()
             isPaused = false
             recordingStartTime += (System.currentTimeMillis() - pausedTime)
             startTimer()
@@ -250,24 +372,219 @@ class MainActivity : AppCompatActivity() {
     
     private fun stopRecording() {
         try {
-            mediaRecorder?.apply {
+            isRecording = false
+            isPaused = false
+            
+            // Stop AudioRecord
+            audioRecord?.apply {
                 stop()
                 release()
             }
-            mediaRecorder = null
+            audioRecord = null
             
-            isRecording = false
-            isPaused = false
+            // Wait for recording job to complete
+            runBlocking {
+                recordingJob?.join()
+            }
+            recordingJob = null
+            
             stopTimer()
             updateUI()
             
             statusText.text = "Recording saved"
             timerText.text = "00:00"
             
+            currentRecordingFile?.let { filePath ->
+                val file = File(filePath)
+                Log.d(TAG, "Recording completed: ${file.name}, size: ${file.length()} bytes")
+                
+                // Also copy to external accessible location for Python script
+                copyToExternalLocation(file)
+                
+                Toast.makeText(this, "Recording saved: ${file.name}", Toast.LENGTH_SHORT).show()
+            }
+            
             loadExistingRecordings()
             
         } catch (e: Exception) {
+            Log.e(TAG, "Failed to stop recording: ${e.message}", e)
             Toast.makeText(this, "Failed to stop recording: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
+    }
+    
+    private fun copyToExternalLocation(sourceFile: File) {
+        try {
+            // Use multiple accessible directories
+            val possibleDirs = listOf(
+                File(getExternalFilesDir(null), "shared"),  // App's external files dir
+                File("/sdcard/Download/QingpuASR"),         // Download folder
+                File("/sdcard/Documents/QingpuASR"),        // Documents folder
+                File("/storage/emulated/0/QingpuASR")       // Primary external storage
+            )
+            
+            var successfulDir: File? = null
+            
+            for (dir in possibleDirs) {
+                try {
+                    if (!dir.exists()) {
+                        val created = dir.mkdirs()
+                        Log.d(TAG, "Attempted to create directory ${dir.absolutePath}: $created")
+                    }
+                    
+                    if (dir.exists() && dir.canWrite()) {
+                        val externalFile = File(dir, sourceFile.name)
+                        sourceFile.copyTo(externalFile, overwrite = true)
+                        
+                        if (externalFile.exists() && externalFile.length() > 0) {
+                            successfulDir = dir
+                            Log.d(TAG, "Successfully copied WAV file to: ${externalFile.absolutePath}")
+                            Log.d(TAG, "File size: ${externalFile.length()} bytes")
+                            
+                            // Also copy the Python script to the same directory
+                            copyPythonScriptToExternal(dir)
+                            break
+                        }
+                    } else {
+                        Log.w(TAG, "Directory not writable: ${dir.absolutePath}")
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to use directory ${dir.absolutePath}: ${e.message}")
+                }
+            }
+            
+            if (successfulDir == null) {
+                Log.e(TAG, "Failed to copy file to any accessible location")
+                Toast.makeText(this, "Warning: Could not copy to external location", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(this, "File copied to: ${successfulDir.name}", Toast.LENGTH_SHORT).show()
+            }
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to copy file to external location: ${e.message}", e)
+        }
+    }
+    
+    private fun copyPythonScriptToExternal(externalDir: File) {
+        try {
+            val pythonScript = """#!/usr/bin/env python3
+# Qingpu Dialect ASR - Python API Client
+# This script handles the API communication for transcribing audio files.
+# Called by the Android app with the audio file path as an argument.
+
+import sys
+import os
+import requests
+import json
+import time
+
+def transcribe_audio(audio_file_path, api_url="http://47.115.207.128:10000/transcribe-and-translate"):
+    # Check if file exists
+    if not os.path.exists(audio_file_path):
+        return {
+            "success": False,
+            "error": f"Audio file not found: {audio_file_path}"
+        }
+    
+    # Check file size
+    file_size = os.path.getsize(audio_file_path)
+    print(f"Processing audio file: {os.path.basename(audio_file_path)}")
+    print(f"File size: {file_size} bytes")
+    
+    try:
+        # Open and send file to API
+        with open(audio_file_path, "rb") as f:
+            files = {"audio_file": f}
+            
+            print(f"Sending request to: {api_url}")
+            start_time = time.time()
+            
+            response = requests.post(
+                api_url,
+                files=files,
+                timeout=30
+            )
+            
+            request_time = time.time() - start_time
+            print(f"Request completed in {request_time:.2f} seconds")
+            print(f"Response status: {response.status_code}")
+            
+        # Parse response
+        if response.status_code == 200:
+            try:
+                result = response.json()
+                print(f"API Response: {result}")
+                
+                if result.get("code") == 200:
+                    return {
+                        "success": True,
+                        "transcription": result.get("transcription", ""),
+                        "translation": result.get("translation", ""),
+                        "request_time": request_time
+                    }
+                else:
+                    return {
+                        "success": False,
+                        "error": f"API Error: {result.get('msg', 'Unknown error')}",
+                        "api_code": result.get("code")
+                    }
+                    
+            except json.JSONDecodeError as e:
+                return {
+                    "success": False,
+                    "error": f"Invalid JSON response: {e}",
+                    "raw_response": response.text[:500]
+                }
+        else:
+            return {
+                "success": False,
+                "error": f"HTTP {response.status_code}: {response.reason}",
+                "raw_response": response.text[:500]
+            }
+            
+    except requests.exceptions.Timeout:
+        return {
+            "success": False,
+            "error": "Request timeout (30 seconds)"
+        }
+    except requests.exceptions.ConnectionError:
+        return {
+            "success": False,
+            "error": "Connection error - check network and server availability"
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Unexpected error: {str(e)}"
+        }
+
+def main():
+    if len(sys.argv) != 2:
+        print("Usage: python transcribe_audio.py <audio_file_path>")
+        sys.exit(1)
+    
+    audio_file_path = sys.argv[1]
+    
+    print("=" * 50)
+    print("Qingpu Dialect ASR - Python Client")
+    print("=" * 50)
+    
+    result = transcribe_audio(audio_file_path)
+    
+    # Output result as JSON for Android to parse
+    print("\n" + "=" * 20 + " RESULT " + "=" * 20)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+
+if __name__ == "__main__":
+    main()
+"""
+            
+            val scriptFile = File(externalDir, "transcribe_audio.py")
+            scriptFile.writeText(pythonScript)
+            
+            Log.d(TAG, "Python script copied to: ${scriptFile.absolutePath}")
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to copy Python script: ${e.message}", e)
         }
     }
     
@@ -323,11 +640,13 @@ class MainActivity : AppCompatActivity() {
         return "recording_${dateFormat.format(Date())}.wav"
     }
     
+
+    
     private fun loadExistingRecordings() {
         recordings.clear()
         val directory = getExternalFilesDir(null)
         directory?.listFiles()?.filter { 
-            it.name.endsWith(".3gp") || it.name.endsWith(".wav") || it.name.endsWith(".mp4")
+            it.name.endsWith(".wav")
         }?.forEach { file ->
             recordings.add(Recording(file.name, file.absolutePath, getDuration(file.absolutePath)))
         }
@@ -480,7 +799,8 @@ class MainActivity : AppCompatActivity() {
     
     private fun renameRecording(recording: Recording, newName: String) {
         val oldFile = File(recording.filePath)
-        val newFileName = "$newName.3gp"
+        val extension = oldFile.extension
+        val newFileName = "$newName.$extension"
         val newFile = File(oldFile.parent, newFileName)
         
         if (oldFile.renameTo(newFile)) {
@@ -497,6 +817,8 @@ class MainActivity : AppCompatActivity() {
         startActivity(intent)
     }
     
+
+
     private fun setupBackPressHandler() {
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
@@ -511,7 +833,11 @@ class MainActivity : AppCompatActivity() {
     
     override fun onDestroy() {
         super.onDestroy()
-        mediaRecorder?.release()
+        // Clean up audio recording
+        isRecording = false
+        audioRecord?.release()
+        recordingJob?.cancel()
+        
         mediaPlayer?.release()
         stopTimer()
     }

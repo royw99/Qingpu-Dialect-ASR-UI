@@ -14,13 +14,12 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.asRequestBody
 import org.json.JSONObject
 import java.io.File
-import java.io.IOException
-import java.util.Date
 import java.util.concurrent.TimeUnit
 
 class TranscribeActivity : AppCompatActivity() {
     companion object {
-        private const val TAG = "QingpuASR_API"
+        private const val TAG = "QingpuASR_Automated"
+        private const val API_URL = "http://47.115.207.128:10000/transcribe-and-translate"
     }
     
     private lateinit var shanghainese_text: TextView
@@ -29,10 +28,11 @@ class TranscribeActivity : AppCompatActivity() {
     private lateinit var progressBar: ProgressBar
     
     private val client = OkHttpClient.Builder()
-        .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
-        .writeTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
-        .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .writeTimeout(60, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
         .build()
+    
     private var transcribeJob: Job? = null
     
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -45,7 +45,7 @@ class TranscribeActivity : AppCompatActivity() {
         // Get the file path from intent
         val filePath = intent.getStringExtra("file_path")
         if (filePath != null) {
-            transcribeAudio(filePath)
+            startAutomatedTranscription(filePath)
         } else {
             Toast.makeText(this, "Error: No audio file provided", Toast.LENGTH_SHORT).show()
             finish()
@@ -65,155 +65,226 @@ class TranscribeActivity : AppCompatActivity() {
         }
     }
     
-    private fun transcribeAudio(filePath: String) {
+    private fun startAutomatedTranscription(filePath: String) {
         transcribeJob = CoroutineScope(Dispatchers.IO).launch {
             try {
                 withContext(Dispatchers.Main) {
                     progressBar.visibility = View.VISIBLE
-                    shanghainese_text.text = "Transcribing audio..."
-                    mandarin_text.text = "Please wait..."
+                    shanghainese_text.text = "Starting automated transcription..."
+                    mandarin_text.text = "Preparing audio file..."
                 }
                 
                 val audioFile = File(filePath)
-                Log.d(TAG, "Attempting to transcribe file: ${audioFile.name}")
+                Log.d(TAG, "=== AUTOMATED TRANSCRIPTION PROCESS ===")
+                Log.d(TAG, "Source audio file: ${audioFile.name}")
                 Log.d(TAG, "File path: ${audioFile.absolutePath}")
                 Log.d(TAG, "File exists: ${audioFile.exists()}")
                 Log.d(TAG, "File size: ${audioFile.length()} bytes")
-                Log.d(TAG, "File can read: ${audioFile.canRead()}")
-                Log.d(TAG, "File last modified: ${Date(audioFile.lastModified())}")
                 
-                if (!audioFile.exists()) {
-                    Log.e(TAG, "Audio file not found at path: ${audioFile.absolutePath}")
+                if (!audioFile.exists() || audioFile.length() == 0L) {
                     withContext(Dispatchers.Main) {
-                        Toast.makeText(this@TranscribeActivity, "Audio file not found", Toast.LENGTH_SHORT).show()
-                        finish()
+                        progressBar.visibility = View.GONE
+                        shanghainese_text.text = "Error: Audio file not found or empty"
+                        mandarin_text.text = "Please try recording again"
+                        Toast.makeText(this@TranscribeActivity, "Invalid audio file", Toast.LENGTH_SHORT).show()
                     }
                     return@launch
                 }
                 
-                // Debug logging
                 withContext(Dispatchers.Main) {
-                    Toast.makeText(this@TranscribeActivity, "File: ${audioFile.name}, Size: ${audioFile.length()} bytes", Toast.LENGTH_LONG).show()
+                    shanghainese_text.text = "Audio file ready (${audioFile.length()} bytes)"
+                    mandarin_text.text = "Copying to accessible location..."
                 }
                 
-                // Read first few bytes to check file format
-                try {
-                    val header = ByteArray(12)
-                    audioFile.inputStream().use { 
-                        val bytesRead = it.read(header)
-                        Log.d(TAG, "File header bytes ($bytesRead): ${header.joinToString(", ") { b -> "%02x".format(b) }}")
+                // Step 1: Copy file to accessible location
+                val externalFile = copyToAccessibleLocation(audioFile)
+                if (externalFile == null) {
+                    withContext(Dispatchers.Main) {
+                        progressBar.visibility = View.GONE
+                        shanghainese_text.text = "Error: Could not save file to accessible location"
+                        mandarin_text.text = "Check storage permissions"
                     }
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to read file header: ${e.message}")
+                    return@launch
                 }
                 
-                // Test different content types
-                val contentTypes = listOf(
-                    "audio/3gpp",
-                    "audio/wav", 
-                    "audio/mpeg",
-                    "application/octet-stream"
-                )
-                
-                for (contentType in contentTypes) {
-                    try {
-                        val success = attemptTranscription(audioFile, contentType)
-                        if (success) {
-                            return@launch
-                        }
-                    } catch (e: Exception) {
-                        println("Failed with content type $contentType: ${e.message}")
-                    }
+                withContext(Dispatchers.Main) {
+                    shanghainese_text.text = "File saved: ${externalFile.name}"
+                    mandarin_text.text = "Connecting to transcription API..."
                 }
                 
-                // If all content types failed, show final error
+                // Step 2: Make direct API call (exactly like Python script)
+                val result = makeDirectApiCall(externalFile)
+                
                 withContext(Dispatchers.Main) {
                     progressBar.visibility = View.GONE
-                    shanghainese_text.text = "All transcription attempts failed"
-                    mandarin_text.text = "File format may not be supported by the API"
+                    
+                    if (result.success) {
+                        shanghainese_text.text = result.transcription
+                        mandarin_text.text = result.translation
+                        Toast.makeText(this@TranscribeActivity, "Success! (${result.requestTime}s)", Toast.LENGTH_SHORT).show()
+                        Log.i(TAG, "Transcription successful!")
+                        Log.i(TAG, "Shanghainese: ${result.transcription}")
+                        Log.i(TAG, "Mandarin: ${result.translation}")
+                    } else {
+                        shanghainese_text.text = "Transcription failed: ${result.error}"
+                        mandarin_text.text = "File saved to: ${externalFile.absolutePath}"
+                        Toast.makeText(this@TranscribeActivity, "API Error: ${result.error}", Toast.LENGTH_LONG).show()
+                        Log.e(TAG, "Transcription failed: ${result.error}")
+                        Log.e(TAG, "Details: ${result.details}")
+                    }
                 }
                 
             } catch (e: Exception) {
+                Log.e(TAG, "Unexpected error in automated transcription: ${e.message}", e)
                 withContext(Dispatchers.Main) {
                     progressBar.visibility = View.GONE
-                    shanghainese_text.text = "Unexpected error"
-                    mandarin_text.text = "Please try again: ${e.message}"
+                    shanghainese_text.text = "Unexpected error occurred"
+                    mandarin_text.text = "Error: ${e.message}"
                     Toast.makeText(this@TranscribeActivity, "Error: ${e.message}", Toast.LENGTH_LONG).show()
                 }
             }
         }
     }
     
-    private suspend fun attemptTranscription(audioFile: File, contentType: String): Boolean {
+    private fun copyToAccessibleLocation(sourceFile: File): File? {
         return try {
+            // Use the app's external files directory (most reliable)
+            val externalDir = File(getExternalFilesDir(null), "transcription")
+            if (!externalDir.exists()) {
+                val created = externalDir.mkdirs()
+                Log.d(TAG, "Created transcription directory: $created")
+            }
+            
+            val externalFile = File(externalDir, "audio_${System.currentTimeMillis()}.wav")
+            sourceFile.copyTo(externalFile, overwrite = true)
+            
+            if (externalFile.exists() && externalFile.length() > 0L) {
+                Log.d(TAG, "File copied successfully to: ${externalFile.absolutePath}")
+                Log.d(TAG, "Copied file size: ${externalFile.length()} bytes")
+                externalFile
+            } else {
+                Log.e(TAG, "File copy verification failed")
+                null
+            }
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to copy file to accessible location: ${e.message}", e)
+            null
+        }
+    }
+    
+    private suspend fun makeDirectApiCall(audioFile: File): TranscriptionResult {
+        return try {
+            Log.d(TAG, "=== MAKING DIRECT API CALL ===")
+            Log.d(TAG, "API URL: $API_URL")
+            Log.d(TAG, "Audio file: ${audioFile.absolutePath}")
+            Log.d(TAG, "File size: ${audioFile.length()} bytes")
+            
+            withContext(Dispatchers.Main) {
+                mandarin_text.text = "Uploading to server..."
+            }
+            
+            // Create multipart request exactly like Python's requests.post
             val requestBody = MultipartBody.Builder()
                 .setType(MultipartBody.FORM)
                 .addFormDataPart(
                     "audio_file",
                     audioFile.name,
-                    audioFile.asRequestBody(contentType.toMediaType())
+                    audioFile.asRequestBody("audio/wav".toMediaType())
                 )
                 .build()
             
-                            // Log request details
-                Log.d(TAG, "Preparing API request with content type: $contentType")
-                Log.d(TAG, "Request body size: ${requestBody.contentLength()} bytes")
-                
-                val request = Request.Builder()
-                    .url("http://47.115.207.128:10000/transcribe-and-translate")
-                    .post(requestBody)
-                    .addHeader("User-Agent", "QingpuDialectASR/1.0")
-                    .addHeader("Accept", "application/json")
-                    .build()
-                
-                Log.d(TAG, "Request headers: ${request.headers}")
+            val request = Request.Builder()
+                .url(API_URL)
+                .post(requestBody)
+                .addHeader("User-Agent", "QingpuDialectASR-Android/1.0")
+                .build()
+            
+            Log.d(TAG, "Request created, sending to server...")
+            Log.d(TAG, "Request body size: ${requestBody.contentLength()} bytes")
+            
+            val startTime = System.currentTimeMillis()
             
             client.newCall(request).execute().use { response ->
+                val requestTime = (System.currentTimeMillis() - startTime) / 1000.0
                 val responseBody = response.body?.string()
                 
+                Log.d(TAG, "=== API RESPONSE ===")
+                Log.d(TAG, "Response code: ${response.code}")
+                Log.d(TAG, "Response message: ${response.message}")
+                Log.d(TAG, "Request time: ${requestTime}s")
+                Log.d(TAG, "Response body: $responseBody")
+                
                 withContext(Dispatchers.Main) {
-                    // Debug: Show response details
-                    Toast.makeText(this@TranscribeActivity, "Trying $contentType - Response: ${response.code}", Toast.LENGTH_SHORT).show()
+                    mandarin_text.text = "Processing response..."
                 }
                 
                 if (response.isSuccessful && responseBody != null) {
                     try {
-                        // Debug: Show raw response
-                        println("API Response ($contentType): $responseBody")
-                        
                         val jsonResponse = JSONObject(responseBody)
-                        val code = jsonResponse.getInt("code")
                         
-                        if (code == 200) {
-                            val transcription = jsonResponse.getString("transcription")
-                            val translation = jsonResponse.getString("translation")
+                        if (jsonResponse.has("code")) {
+                            val code = jsonResponse.getInt("code")
+                            Log.d(TAG, "API response code: $code")
                             
-                            withContext(Dispatchers.Main) {
-                                progressBar.visibility = View.GONE
-                                shanghainese_text.text = transcription
-                                mandarin_text.text = translation
-                                Toast.makeText(this@TranscribeActivity, "Success with $contentType!", Toast.LENGTH_SHORT).show()
+                            if (code == 200) {
+                                val transcription = jsonResponse.optString("transcription", "")
+                                val translation = jsonResponse.optString("translation", "")
+                                
+                                if (transcription.isNotEmpty() && translation.isNotEmpty()) {
+                                    TranscriptionResult(
+                                        success = true,
+                                        transcription = transcription,
+                                        translation = translation,
+                                        requestTime = requestTime.toString()
+                                    )
+                                } else {
+                                    TranscriptionResult(
+                                        success = false,
+                                        error = "Empty transcription or translation",
+                                        details = "Response: $responseBody"
+                                    )
+                                }
+                            } else {
+                                val errorMsg = jsonResponse.optString("msg", "Unknown API error")
+                                TranscriptionResult(
+                                    success = false,
+                                    error = "API Error (code $code): $errorMsg",
+                                    details = responseBody
+                                )
                             }
-                            return@use true
                         } else {
-                            val errorMsg = jsonResponse.optString("msg", "Unknown error")
-                            println("API Error ($contentType): $errorMsg")
-                            return@use false
+                            TranscriptionResult(
+                                success = false,
+                                error = "Invalid API response format",
+                                details = "Missing 'code' field in response"
+                            )
                         }
+                        
                     } catch (e: Exception) {
-                        println("JSON Parse Error ($contentType): ${e.message}")
-                        println("Raw response: $responseBody")
-                        return@use false
+                        Log.e(TAG, "JSON parsing error: ${e.message}", e)
+                        TranscriptionResult(
+                            success = false,
+                            error = "Failed to parse API response",
+                            details = "JSON error: ${e.message}"
+                        )
                     }
                 } else {
-                    println("HTTP Error ($contentType): ${response.code}")
-                    println("Response body: $responseBody")
-                    return@use false
+                    TranscriptionResult(
+                        success = false,
+                        error = "HTTP ${response.code}: ${response.message}",
+                        details = responseBody ?: "No response body"
+                    )
                 }
             }
+            
         } catch (e: Exception) {
-            println("Network Error ($contentType): ${e.message}")
-            false
+            Log.e(TAG, "API call failed: ${e.message}", e)
+            TranscriptionResult(
+                success = false,
+                error = "Network error: ${e.message}",
+                details = "Check network connection and server availability"
+            )
         }
     }
     
@@ -221,4 +292,13 @@ class TranscribeActivity : AppCompatActivity() {
         super.onDestroy()
         transcribeJob?.cancel()
     }
-} 
+    
+    data class TranscriptionResult(
+        val success: Boolean,
+        val transcription: String = "",
+        val translation: String = "",
+        val requestTime: String = "",
+        val error: String = "",
+        val details: String? = null
+    )
+}
